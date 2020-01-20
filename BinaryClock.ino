@@ -1,28 +1,19 @@
-#define MUX_A 2
-#define MUX_B 3
-#define MUX_C 4
+
 
 void setup() {
-  instantiateMux();
-  changeMuxPin(0);
+  initRTC();
+  initShiftRegisterOutput();
+  resetOutput();
 }
 
 void loop() {
-  changeMuxPin(0);
-  delay(1);
-  changeMuxPin(1);
-  delay(1);
-  changeMuxPin(2);
-  delay(1);
-  changeMuxPin(3);
-  delay(1);
-  changeMuxPin(4);
-  delay(1);
-  changeMuxPin(5);
-  delay(1);
-  changeMuxPin(6);
-  delay(1);
-  changeMuxPin(7);
-  delay(1);
+  int hour = getHours();
+  int minute = getMinutes();
+  int second = getSeconds();
 
+  byte hourByte = getTimeByte(hour);
+  byte minuteByte = getTimeByte(minute);
+  byte secondByte = getTimeByte(second);
+
+  sendTimeData(hourByte, minuteByte, secondByte);
 }
