@@ -7,8 +7,10 @@ void initRTC () {
     Serial.begin(57600);
     Wire.begin();
     RTC.begin();
-    
-    RTC.adjust(DateTime(__DATE__, __TIME__));
+
+    if (!RTC.isrunning()) {
+      RTC.adjust(DateTime(__DATE__, __TIME__));
+    }
 }
 
 int getHours() {

@@ -1,3 +1,5 @@
+#include "Libraries/Ticker/Ticker.h"
+
 void setup() {
   initRTC();
   initShiftRegisterOutput();
@@ -14,4 +16,7 @@ void loop() {
   byte secondByte = getTimeByte(second);
 
   sendTimeData(hourByte, minuteByte, secondByte);
+  printDebugInformation(hourByte, minuteByte, secondByte, hour, minute, second);
+  
+  delay(1000);
 }
