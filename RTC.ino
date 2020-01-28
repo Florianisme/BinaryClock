@@ -1,5 +1,5 @@
 #include <Wire.h>
-#include <RTClib.h>
+#include "src/RTClib/RTClib.h"
 
 RTC_DS1307 RTC;
 

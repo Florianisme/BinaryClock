@@ -1,12 +1,19 @@
-#include "Libraries/Ticker/Ticker.h"
+#include "src/Ticker/Ticker.h"
+void update();
+Ticker ticker(update, 1000);
 
 void setup() {
   initRTC();
   initShiftRegisterOutput();
   resetOutput();
+  ticker.start();
 }
 
 void loop() {
+  ticker.update();  
+}
+
+void update() {
   int hour = getHours();
   int minute = getMinutes();
   int second = getSeconds();
@@ -17,6 +24,4 @@ void loop() {
 
   sendTimeData(hourByte, minuteByte, secondByte);
   printDebugInformation(hourByte, minuteByte, secondByte, hour, minute, second);
-  
-  delay(1000);
 }
