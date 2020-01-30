@@ -1,71 +1,132 @@
-// A library for handling real-time clocks, dates, etc.
-// 2010-02-04 <jc@wippler.nl> http://opensource.org/licenses/mit-license.php
-// 2012-11-08 RAM methods - idreammicro.com
-// 2012-11-14 SQW/OUT methods - idreammicro.com
-// 2012-01-12 DS1388 support
-// 2013-08-29 ENERGIA MSP430 support
+/**************************************************************************/
+/*!
+  @file     RTClib.cpp
 
-#include <Wire.h>
-// Energia support
-#ifndef ENERGIA
-#include <avr/pgmspace.h>
+  @mainpage Adafruit RTClib
+
+  @section intro Introduction
+
+  This is a fork of JeeLab's fantastic real time clock library for Arduino.
+
+  For details on using this library with an RTC module like the DS1307, PCF8523, or DS3231,
+  see the guide at: https://learn.adafruit.com/ds1307-real-time-clock-breakout-board-kit/overview
+
+  Adafruit invests time and resources providing this open source code,
+  please support Adafruit and open-source hardware by purchasing
+  products from Adafruit!
+
+  @section classes Available classes
+
+  This library provides the following classes:
+
+  - Classes for manipulating dates, times and durations:
+    - DateTime represents a specific point in time; this is the data
+      type used for setting and reading the supported RTCs
+    - TimeSpan represents the length of a time interval
+  - Interfacing specific RTC chips:
+    - RTC_DS1307
+    - RTC_DS3231
+    - RTC_PCF8523
+  - RTC emulated in software; do not expect much accuracy out of these:
+    - RTC_Millis is based on `millis()`
+    - RTC_Micros is based on `micros()`; its drift rate can be tuned by
+      the user
+
+  @section license License
+
+  Original library by JeeLabs http://news.jeelabs.org/code/, released to the public domain.
+
+  This version: MIT (see LICENSE)
+*/
+/**************************************************************************/
+
+#ifdef __AVR_ATtiny85__
+ #include <TinyWireM.h>
+ #define Wire TinyWireM
 #else
-#define pgm_read_word(data) *data
-#define pgm_read_byte(data) *data
-#define PROGMEM
+#include <Wire.h>
 #endif
+
 #include "RTClib.h"
-#include <Arduino.h>
-
-#define DS1307_ADDRESS          0x68
-#define DS1307_CONTROL_REGISTER 0x07
-#define DS1307_RAM_REGISTER     0x08
-
-// DS1307 Control register bits.
-#define RTC_DS1307__RS0         0x00
-#define RTC_DS1307__RS1         0x01
-#define RTC_DS1307__SQWE        0x04
-#define RTC_DS1307__OUT         0x07
-
-// DS1388 Control register bits
-#define DS1388_EEPROM_0         0x01
-#define DS1388_EEPROM_1         0x02
+#ifdef __AVR__
+ #include <avr/pgmspace.h>
+#elif defined(ESP8266)
+ #include <pgmspace.h>
+#elif defined(ARDUINO_ARCH_SAMD)
+// nothing special needed
+#elif defined(ARDUINO_SAM_DUE)
+ #define PROGMEM
+ #define pgm_read_byte(addr) (*(const unsigned char *)(addr))
+ #define Wire Wire1
+#endif
 
 
-#define PCF8563_ADDRESS         0x51
-#define PCF8563_SEC_ADDR        0x02
 
-#define BQ32000_ADDRESS         0x68
-// BQ32000 register addresses:
-#define BQ32000_CAL_CFG1        0x07
-#define BQ32000_TCH2            0x08
-#define BQ32000_CFG2            0x09
-#define BQ32000_SFKEY1          0x20
-#define BQ32000_SFKEY2          0x21
-#define BQ32000_SFR             0x22
-// BQ32000 config bits:
-#define BQ32000__OUT            0x07 // CAL_CFG1 - IRQ active state
-#define BQ32000__FT             0x06 // CAL_CFG1 - IRQ square wave enable
-#define BQ32000__CAL_S          0x05 // CAL_CFG1 - Calibration sign
-#define BQ32000__TCH2_BIT       0x05 // TCH2 - Trickle charger switch 2
-#define BQ32000__TCFE           0x06 // CFG2 - Trickle FET control
-// BQ32000 config values:
-#define BQ32000_CHARGE_ENABLE   0x05 // CFG2 - Trickle charger switch 1 enable
-#define BQ32000_SFKEY1_VAL      0x5E
-#define BQ32000_SFKEY2_VAL      0xC7
-#define BQ32000_FTF_1HZ         0x01
-#define BQ32000_FTF_512HZ       0x00
+#if (ARDUINO >= 100)
+ #include <Arduino.h> // capital A so it is error prone on case-sensitive filesystems
+ // Macro to deal with the difference in I2C write functions from old and new Arduino versions.
+ #define _I2C_WRITE write   ///< Modern I2C write
+ #define _I2C_READ  read    ///< Modern I2C read
+#else
+ #include <WProgram.h>
+ #define _I2C_WRITE send    ///< Legacy I2C write
+ #define _I2C_READ  receive ///< legacy I2C read
+#endif
 
-#define SECONDS_PER_DAY         86400L
 
-////////////////////////////////////////////////////////////////////////////////
+/**************************************************************************/
+/*!
+    @brief  Read a byte from an I2C register
+    @param addr I2C address
+    @param reg Register address
+    @return Register value
+*/
+/**************************************************************************/
+static uint8_t read_i2c_register(uint8_t addr, uint8_t reg) {
+  Wire.beginTransmission(addr);
+  Wire._I2C_WRITE((byte)reg);
+  Wire.endTransmission();
+
+  Wire.requestFrom(addr, (byte)1);
+  return Wire._I2C_READ();
+}
+
+/**************************************************************************/
+/*!
+    @brief  Write a byte to an I2C register
+    @param addr I2C address
+    @param reg Register address
+    @param val Value to write
+*/
+/**************************************************************************/
+static void write_i2c_register(uint8_t addr, uint8_t reg, uint8_t val) {
+  Wire.beginTransmission(addr);
+  Wire._I2C_WRITE((byte)reg);
+  Wire._I2C_WRITE((byte)val);
+  Wire.endTransmission();
+}
+
+
+/**************************************************************************/
 // utility code, some of this could be exposed in the DateTime API if needed
+/**************************************************************************/
 
-static const uint8_t daysInMonth [] PROGMEM = {
-  31,28,31,30,31,30,31,31,30,31,30,31
-};
+/**
+  Number of days in each month, from January to November. December is not
+  needed. Omitting it avoids an incompatibility with Paul Stoffregen's Time
+  library. C.f. https://github.com/adafruit/RTClib/issues/114
+*/
+const uint8_t daysInMonth [] PROGMEM = { 31,28,31,30,31,30,31,31,30,31,30 };
 
-// number of days since 2000/01/01, valid for 2001..2099
+/**************************************************************************/
+/*!
+    @brief  Given a date, return number of days since 2000/01/01, valid for 2001..2099
+    @param y Year
+    @param m Month
+    @param d Day
+    @return Number of days
+*/
+/**************************************************************************/
 static uint16_t date2days(uint16_t y, uint8_t m, uint8_t d) {
     if (y >= 2000)
         y -= 2000;
@@ -77,39 +138,66 @@ static uint16_t date2days(uint16_t y, uint8_t m, uint8_t d) {
     return days + 365 * y + (y + 3) / 4 - 1;
 }
 
+/**************************************************************************/
+/*!
+    @brief  Given a number of days, hours, minutes, and seconds, return the total seconds
+    @param days Days
+    @param h Hours
+    @param m Minutes
+    @param s Seconds
+    @return Number of seconds total
+*/
+/**************************************************************************/
 static long time2long(uint16_t days, uint8_t h, uint8_t m, uint8_t s) {
     return ((days * 24L + h) * 60 + m) * 60 + s;
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// DateTime implementation - ignores time zones and DST changes
-// NOTE: also ignores leap seconds, see http://en.wikipedia.org/wiki/Leap_second
 
-DateTime::DateTime (long t) {
-    ss = t % 60;
-    t /= 60;
-    mm = t % 60;
-    t /= 60;
-    hh = t % 24;
-    uint16_t days = t / 24;
-    uint8_t leap;
-    for (yOff = 0; ; ++yOff) {
-        leap = yOff % 4 == 0;
-        if (days < 365 + leap)
-            break;
-        days -= 365 + leap;
-    }
-    for (m = 1; ; ++m) {
-        uint8_t daysPerMonth = pgm_read_byte(daysInMonth + m - 1);
-        if (leap && m == 2)
-            ++daysPerMonth;
-        if (days < daysPerMonth)
-            break;
-        days -= daysPerMonth;
-    }
-    d = days + 1;
+
+/**************************************************************************/
+/*!
+    @brief  DateTime constructor from unixtime
+    @param t Initial time in seconds since Jan 1, 1970 (Unix time)
+*/
+/**************************************************************************/
+DateTime::DateTime (uint32_t t) {
+  t -= SECONDS_FROM_1970_TO_2000;    // bring to 2000 timestamp from 1970
+
+  ss = t % 60;
+  t /= 60;
+  mm = t % 60;
+  t /= 60;
+  hh = t % 24;
+  uint16_t days = t / 24;
+  uint8_t leap;
+  for (yOff = 0; ; ++yOff) {
+    leap = yOff % 4 == 0;
+    if (days < 365 + leap)
+      break;
+    days -= 365 + leap;
+  }
+  for (m = 1; m < 12; ++m) {
+    uint8_t daysPerMonth = pgm_read_byte(daysInMonth + m - 1);
+    if (leap && m == 2)
+      ++daysPerMonth;
+    if (days < daysPerMonth)
+      break;
+    days -= daysPerMonth;
+  }
+  d = days + 1;
 }
 
+/**************************************************************************/
+/*!
+    @brief  DateTime constructor from Y-M-D H:M:S
+    @param year Year, 2 or 4 digits (year 2000 or higher)
+    @param month Month 1-12
+    @param day Day 1-31
+    @param hour 0-23
+    @param min 0-59
+    @param sec 0-59
+*/
+/**************************************************************************/
 DateTime::DateTime (uint16_t year, uint8_t month, uint8_t day, uint8_t hour, uint8_t min, uint8_t sec) {
     if (year >= 2000)
         year -= 2000;
@@ -121,6 +209,27 @@ DateTime::DateTime (uint16_t year, uint8_t month, uint8_t day, uint8_t hour, uin
     ss = sec;
 }
 
+/**************************************************************************/
+/*!
+    @brief  DateTime copy constructor using a member initializer list
+    @param copy DateTime object to copy
+*/
+/**************************************************************************/
+DateTime::DateTime (const DateTime& copy):
+  yOff(copy.yOff),
+  m(copy.m),
+  d(copy.d),
+  hh(copy.hh),
+  mm(copy.mm),
+  ss(copy.ss)
+{}
+
+/**************************************************************************/
+/*!
+    @brief  Convert a string containing two digits to uint8_t, e.g. "09" returns 9
+    @param p Pointer to a string containing two digits
+*/
+/**************************************************************************/
 static uint8_t conv2d(const char* p) {
     uint8_t v = 0;
     if ('0' <= *p && *p <= '9')
@@ -128,15 +237,21 @@ static uint8_t conv2d(const char* p) {
     return 10 * v + *++p - '0';
 }
 
-// A convenient constructor for using "the compiler's time":
-//   DateTime now (__DATE__, __TIME__);
-// NOTE: using PSTR would further reduce the RAM footprint
+/**************************************************************************/
+/*!
+    @brief  A convenient constructor for using "the compiler's time":
+            DateTime now (__DATE__, __TIME__);
+            NOTE: using F() would further reduce the RAM footprint, see below.
+    @param date Date string, e.g. "Dec 26 2009"
+    @param time Time string, e.g. "12:34:56"
+*/
+/**************************************************************************/
 DateTime::DateTime (const char* date, const char* time) {
     // sample input: date = "Dec 26 2009", time = "12:34:56"
     yOff = conv2d(date + 9);
     // Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec
     switch (date[0]) {
-        case 'J': m = date[1] == 'a' ? 1 : m = date[2] == 'n' ? 6 : 7; break;
+        case 'J': m = (date[1] == 'a') ? 1 : ((date[2] == 'n') ? 6 : 7); break;
         case 'F': m = 2; break;
         case 'A': m = date[2] == 'r' ? 4 : 8; break;
         case 'M': m = date[2] == 'r' ? 3 : 5; break;
@@ -151,480 +266,814 @@ DateTime::DateTime (const char* date, const char* time) {
     ss = conv2d(time + 6);
 }
 
-uint8_t DateTime::dayOfWeek() const {
-    uint16_t day = get() / SECONDS_PER_DAY;
+/**************************************************************************/
+/*!
+    @brief  A convenient constructor for using "the compiler's time":
+            This version will save RAM by using PROGMEM to store it by using the F macro.
+            DateTime now (F(__DATE__), F(__TIME__));
+    @param date Date string, e.g. "Dec 26 2009"
+    @param time Time string, e.g. "12:34:56"
+*/
+/**************************************************************************/
+DateTime::DateTime (const __FlashStringHelper* date, const __FlashStringHelper* time) {
+    // sample input: date = "Dec 26 2009", time = "12:34:56"
+    char buff[11];
+    memcpy_P(buff, date, 11);
+    yOff = conv2d(buff + 9);
+    // Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec
+    switch (buff[0]) {
+        case 'J': m = (buff[1] == 'a') ? 1 : ((buff[2] == 'n') ? 6 : 7); break;
+        case 'F': m = 2; break;
+        case 'A': m = buff[2] == 'r' ? 4 : 8; break;
+        case 'M': m = buff[2] == 'r' ? 3 : 5; break;
+        case 'S': m = 9; break;
+        case 'O': m = 10; break;
+        case 'N': m = 11; break;
+        case 'D': m = 12; break;
+    }
+    d = conv2d(buff + 4);
+    memcpy_P(buff, time, 8);
+    hh = conv2d(buff);
+    mm = conv2d(buff + 3);
+    ss = conv2d(buff + 6);
+}
+
+/**************************************************************************/
+/*!
+    @brief  Return DateTime in based on user defined format.
+    @param buffer: array of char for holding the format description and the formatted DateTime. 
+                   Before calling this method, the buffer should be initialized by the user with 
+                   a format string, e.g. "YYYY-MM-DD hh:mm:ss". The method will overwrite 
+                   the buffer with the formatted date and/or time.
+    @return a pointer to the provided buffer. This is returned for convenience, 
+            in order to enable idioms such as Serial.println(now.toString(buffer));
+*/
+/**************************************************************************/
+
+char* DateTime::toString(char* buffer){
+		for(int i=0;i<strlen(buffer)-1;i++){
+		if(buffer[i] == 'h' && buffer[i+1] == 'h'){
+			buffer[i] = '0'+hh/10;
+			buffer[i+1] = '0'+hh%10;
+		}
+		if(buffer[i] == 'm' && buffer[i+1] == 'm'){
+			buffer[i] = '0'+mm/10;
+			buffer[i+1] = '0'+mm%10;
+		}
+		if(buffer[i] == 's' && buffer[i+1] == 's'){
+			buffer[i] = '0'+ss/10;
+			buffer[i+1] = '0'+ss%10;
+		}
+    if(buffer[i] == 'D' && buffer[i+1] =='D' && buffer[i+2] =='D'){
+      static PROGMEM const char day_names[] = "SunMonTueWedThuFriSat";
+      const char *p = &day_names[3*dayOfTheWeek()];
+      buffer[i] = pgm_read_byte(p);
+      buffer[i+1] = pgm_read_byte(p+1);
+      buffer[i+2] = pgm_read_byte(p+2);
+    }else
+		if(buffer[i] == 'D' && buffer[i+1] == 'D'){
+			buffer[i] = '0'+d/10;
+			buffer[i+1] = '0'+d%10;
+		}
+    if(buffer[i] == 'M' && buffer[i+1] =='M' && buffer[i+2] =='M'){
+      static PROGMEM const char month_names[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+      const char *p = &month_names[3*(m-1)];
+      buffer[i] = pgm_read_byte(p);
+      buffer[i+1] = pgm_read_byte(p+1);
+      buffer[i+2] = pgm_read_byte(p+2);      
+    }else
+		if(buffer[i] == 'M' && buffer[i+1] == 'M'){
+			buffer[i] = '0'+m/10;
+			buffer[i+1] = '0'+m%10;
+		}
+		if(buffer[i] == 'Y'&& buffer[i+1] == 'Y'&& buffer[i+2] == 'Y'&& buffer[i+3] == 'Y'){
+			buffer[i] = '2';
+			buffer[i+1] = '0';
+			buffer[i+2] = '0'+(yOff/10)%10;
+			buffer[i+3] = '0'+yOff%10;
+		}else
+		if(buffer[i] == 'Y'&& buffer[i+1] == 'Y'){
+			buffer[i] = '0'+(yOff/10)%10;
+			buffer[i+1] = '0'+yOff%10;
+		}
+
+	}
+	return buffer;
+}
+
+/**************************************************************************/
+/*!
+    @brief  Return the day of the week for this object, from 0-6.
+    @return Day of week 0-6 starting with Sunday, e.g. Sunday = 0, Saturday = 6
+*/
+/**************************************************************************/
+uint8_t DateTime::dayOfTheWeek() const {
+    uint16_t day = date2days(yOff, m, d);
     return (day + 6) % 7; // Jan 1, 2000 is a Saturday, i.e. returns 6
 }
 
-long DateTime::get() const {
-    uint16_t days = date2days(yOff, m, d);
-    return time2long(days, hh, mm, ss);
+/**************************************************************************/
+/*!
+    @brief  Return unix time, seconds since Jan 1, 1970.
+    @return Number of seconds since Jan 1, 1970
+*/
+/**************************************************************************/
+uint32_t DateTime::unixtime(void) const {
+  uint32_t t;
+  uint16_t days = date2days(yOff, m, d);
+  t = time2long(days, hh, mm, ss);
+  t += SECONDS_FROM_1970_TO_2000;  // seconds from 1970 to 2000
+
+  return t;
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// RTC_DS1307 implementation
-
-void RTC_DS1307::adjust(const DateTime& dt) {
-    Wire.beginTransmission(DS1307_ADDRESS);
-      Wire.write((byte) 0);
-      Wire.write(bin2bcd(dt.second()));
-      Wire.write(bin2bcd(dt.minute()));
-      Wire.write(bin2bcd(dt.hour()));
-      Wire.write(bin2bcd(0));
-      Wire.write(bin2bcd(dt.day()));
-      Wire.write(bin2bcd(dt.month()));
-      Wire.write(bin2bcd(dt.year() - 2000));
-      Wire.write((byte) 0);
-    Wire.endTransmission();
+/**************************************************************************/
+/*!
+    @brief  Convert the DateTime to seconds
+    @return The object as seconds since 2000-01-01
+*/
+/**************************************************************************/
+long DateTime::secondstime(void) const {
+  long t;
+  uint16_t days = date2days(yOff, m, d);
+  t = time2long(days, hh, mm, ss);
+  return t;
 }
 
-DateTime RTC_DS1307::now() {
-    Wire.beginTransmission(DS1307_ADDRESS);
-      Wire.write((byte) 0);
-    Wire.endTransmission();
-
-    Wire.requestFrom(DS1307_ADDRESS, 7);
-    uint8_t ss = bcd2bin(Wire.read());
-    uint8_t mm = bcd2bin(Wire.read());
-    uint8_t hh = bcd2bin(Wire.read());
-    Wire.read();
-    uint8_t d = bcd2bin(Wire.read());
-    uint8_t m = bcd2bin(Wire.read());
-    uint16_t y = bcd2bin(Wire.read()) + 2000;
-
-    return DateTime (y, m, d, hh, mm, ss);
+/**************************************************************************/
+/*!
+    @brief  Add a TimeSpan to the DateTime object
+    @param span TimeSpan object
+    @return new DateTime object with span added to it
+*/
+/**************************************************************************/
+DateTime DateTime::operator+(const TimeSpan& span) {
+  return DateTime(unixtime()+span.totalseconds());
 }
 
-void RTC_DS1307::setSqwOutLevel(uint8_t level) {
-    uint8_t value = (level == LOW) ? 0x00 : (1 << RTC_DS1307__OUT);
-    Wire.beginTransmission(DS1307_ADDRESS);
-      Wire.write(DS1307_CONTROL_REGISTER);
-      Wire.write(value);
-    Wire.endTransmission();
+/**************************************************************************/
+/*!
+    @brief  Subtract a TimeSpan from the DateTime object
+    @param span TimeSpan object
+    @return new DateTime object with span subtracted from it
+*/
+/**************************************************************************/
+DateTime DateTime::operator-(const TimeSpan& span) {
+  return DateTime(unixtime()-span.totalseconds());
 }
 
-void RTC_DS1307::setSqwOutSignal(Frequencies frequency) {
-    uint8_t value = (1 << RTC_DS1307__SQWE);
-    switch (frequency)
-    {
-        case Frequency_1Hz:
-            // Nothing to do.
-        break;
-        case Frequency_4096Hz:
-            value |= (1 << RTC_DS1307__RS0);
-        break;
-        case Frequency_8192Hz:
-            value |= (1 << RTC_DS1307__RS1);
-        break;
-        case Frequency_32768Hz:
-        default:
-            value |= (1 << RTC_DS1307__RS1) | (1 << RTC_DS1307__RS0);
-        break;
-    }
-    Wire.beginTransmission(DS1307_ADDRESS);
-      Wire.write(DS1307_CONTROL_REGISTER);
-      Wire.write(value);
-    Wire.endTransmission();
+/**************************************************************************/
+/*!
+    @brief  Subtract one DateTime from another
+    @param right The DateTime object to subtract from self (the left object)
+    @return TimeSpan of the difference between DateTimes
+*/
+/**************************************************************************/
+TimeSpan DateTime::operator-(const DateTime& right) {
+  return TimeSpan(unixtime()-right.unixtime());
 }
 
-uint8_t RTC_DS1307::readByteInRam(uint8_t address) {
-    Wire.beginTransmission(DS1307_ADDRESS);
-      Wire.write(address);
-    Wire.endTransmission();
-
-    Wire.requestFrom(DS1307_ADDRESS, 1);
-    uint8_t data = Wire.read();
-    Wire.endTransmission();
-
-    return data;
+/**************************************************************************/
+/*!
+    @brief  Is one DateTime object less than (older) than the other?
+    @param right Comparison DateTime object
+    @return True if the left object is older than the right object
+*/
+/**************************************************************************/
+bool DateTime::operator<(const DateTime& right) const {
+  return unixtime() < right.unixtime();
 }
 
-void RTC_DS1307::readBytesInRam(uint8_t address, uint8_t length, uint8_t* p_data) {
-    Wire.beginTransmission(DS1307_ADDRESS);
-      Wire.write(address);
-    Wire.endTransmission();
-
-    Wire.requestFrom(DS1307_ADDRESS, (int)length);
-    for (uint8_t i = 0; i < length; i++) {
-        p_data[i] = Wire.read();
-    }
-    Wire.endTransmission();
+/**************************************************************************/
+/*!
+    @brief  Is one DateTime object equal to the other?
+    @param right Comparison DateTime object
+    @return True if both DateTime objects are the same
+*/
+/**************************************************************************/
+bool DateTime::operator==(const DateTime& right) const {
+  return unixtime() == right.unixtime();
 }
 
-void RTC_DS1307::writeByteInRam(uint8_t address, uint8_t data) {
-    Wire.beginTransmission(DS1307_ADDRESS);
-      Wire.write(address);
-      Wire.write(data);
-    Wire.endTransmission();
+/**************************************************************************/
+/*!
+    @brief  ISO 8601 Timestamp
+    @param opt Format of the timestamp
+    @return Timestamp string, e.g. "2000-01-01T12:34:56"
+*/
+/**************************************************************************/
+String DateTime::timestamp(timestampOpt opt){
+  char buffer[20];
+
+  //Generate timestamp according to opt
+  switch(opt){
+    case TIMESTAMP_TIME:
+    //Only time
+    sprintf(buffer, "%02d:%02d:%02d", hh, mm, ss);
+    break;
+    case TIMESTAMP_DATE:
+    //Only date
+    sprintf(buffer, "%d-%02d-%02d", 2000+yOff, m, d);
+    break;
+    default:
+    //Full
+    sprintf(buffer, "%d-%02d-%02dT%02d:%02d:%02d", 2000+yOff, m, d, hh, mm, ss);
+  }
+  return String(buffer);
 }
 
-void RTC_DS1307::writeBytesInRam(uint8_t address, uint8_t length, uint8_t* p_data) {
-    Wire.beginTransmission(DS1307_ADDRESS);
-      Wire.write(address);
-      for (uint8_t i = 0; i < length; i++) {
-             Wire.write(p_data[i]);
-      }
-    Wire.endTransmission();
+
+
+/**************************************************************************/
+/*!
+    @brief  Create a new TimeSpan object in seconds
+    @param seconds Number of seconds
+*/
+/**************************************************************************/
+TimeSpan::TimeSpan (int32_t seconds):
+  _seconds(seconds)
+{}
+
+/**************************************************************************/
+/*!
+    @brief  Create a new TimeSpan object using a number of days/hours/minutes/seconds
+            e.g. Make a TimeSpan of 3 hours and 45 minutes: new TimeSpan(0, 3, 45, 0);
+    @param days Number of days
+    @param hours Number of hours
+    @param minutes Number of minutes
+    @param seconds Number of seconds
+*/
+/**************************************************************************/
+TimeSpan::TimeSpan (int16_t days, int8_t hours, int8_t minutes, int8_t seconds):
+  _seconds((int32_t)days*86400L + (int32_t)hours*3600 + (int32_t)minutes*60 + seconds)
+{}
+
+/**************************************************************************/
+/*!
+    @brief  Copy constructor, make a new TimeSpan using an existing one
+    @param copy The TimeSpan to copy
+*/
+/**************************************************************************/
+TimeSpan::TimeSpan (const TimeSpan& copy):
+  _seconds(copy._seconds)
+{}
+
+/**************************************************************************/
+/*!
+    @brief  Add two TimeSpans
+    @param right TimeSpan to add
+    @return New TimeSpan object, sum of left and right
+*/
+/**************************************************************************/
+TimeSpan TimeSpan::operator+(const TimeSpan& right) {
+  return TimeSpan(_seconds+right._seconds);
 }
 
+/**************************************************************************/
+/*!
+    @brief  Subtract a TimeSpan
+    @param right TimeSpan to subtract
+    @return New TimeSpan object, right subtracted from left
+*/
+/**************************************************************************/
+TimeSpan TimeSpan::operator-(const TimeSpan& right) {
+  return TimeSpan(_seconds-right._seconds);
+}
+
+
+
+/**************************************************************************/
+/*!
+    @brief  Convert a binary coded decimal value to binary. RTC stores time/date values as BCD.
+    @param val BCD value
+    @return Binary value
+*/
+/**************************************************************************/
+static uint8_t bcd2bin (uint8_t val) { return val - 6 * (val >> 4); }
+
+/**************************************************************************/
+/*!
+    @brief  Convert a binary value to BCD format for the RTC registers
+    @param val Binary value
+    @return BCD value
+*/
+/**************************************************************************/
+static uint8_t bin2bcd (uint8_t val) { return val + 6 * (val / 10); }
+
+
+
+/**************************************************************************/
+/*!
+    @brief  Startup for the DS1307
+    @return Always true
+*/
+/**************************************************************************/
+boolean RTC_DS1307::begin(void) {
+  Wire.begin();
+  return true;
+}
+
+/**************************************************************************/
+/*!
+    @brief  Is the DS1307 running? Check the Clock Halt bit in register 0
+    @return 1 if the RTC is running, 0 if not
+*/
+/**************************************************************************/
 uint8_t RTC_DS1307::isrunning(void) {
   Wire.beginTransmission(DS1307_ADDRESS);
-    Wire.write((byte) 0);
+  Wire._I2C_WRITE((byte)0);
   Wire.endTransmission();
 
   Wire.requestFrom(DS1307_ADDRESS, 1);
-  uint8_t ss = Wire.read();
+  uint8_t ss = Wire._I2C_READ();
   return !(ss>>7);
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// DS 1388 implementation
-uint8_t RTC_DS1388::WDSeconds = bin2bcd(60); //default to 60 seconds;
-uint8_t RTC_DS1388::WDTSeconds = bin2bcd(0); //default to 60.00 seconds;
-
-
-void RTC_DS1388::adjust(const DateTime& dt) {
+/**************************************************************************/
+/*!
+    @brief  Set the date and time in the DS1307
+    @param dt DateTime object containing the desired date/time
+*/
+/**************************************************************************/
+void RTC_DS1307::adjust(const DateTime& dt) {
   Wire.beginTransmission(DS1307_ADDRESS);
-    Wire.write((byte) 0);
-    Wire.write(bin2bcd(0)); // hundreds of seconds 0x00
-    Wire.write(bin2bcd(dt.second())); // 0x01
-    Wire.write(bin2bcd(dt.minute())); // 0x02
-    Wire.write(bin2bcd(dt.hour())); // 0x03
-    Wire.write(bin2bcd(0)); // 0x04
-    Wire.write(bin2bcd(dt.day())); // 0x05
-    Wire.write(bin2bcd(dt.month())); // 0x06
-    Wire.write(bin2bcd(dt.year() - 2000)); // 0x07
-  Wire.endTransmission();
-
-  Wire.beginTransmission(DS1307_ADDRESS);
-    Wire.write((byte) 0x0b);
-    Wire.write((byte) 0x00);      //clear the 'time is invalid ' flag bit (OSF)
+  Wire._I2C_WRITE((byte)0); // start at location 0
+  Wire._I2C_WRITE(bin2bcd(dt.second()));
+  Wire._I2C_WRITE(bin2bcd(dt.minute()));
+  Wire._I2C_WRITE(bin2bcd(dt.hour()));
+  Wire._I2C_WRITE(bin2bcd(0));
+  Wire._I2C_WRITE(bin2bcd(dt.day()));
+  Wire._I2C_WRITE(bin2bcd(dt.month()));
+  Wire._I2C_WRITE(bin2bcd(dt.year() - 2000));
   Wire.endTransmission();
 }
 
-DateTime RTC_DS1388::now() {
+/**************************************************************************/
+/*!
+    @brief  Get the current date and time from the DS1307
+    @return DateTime object containing the current date and time
+*/
+/**************************************************************************/
+DateTime RTC_DS1307::now() {
   Wire.beginTransmission(DS1307_ADDRESS);
-    Wire.write((byte) 0);
+  Wire._I2C_WRITE((byte)0);
   Wire.endTransmission();
 
-  Wire.requestFrom(DS1307_ADDRESS, 8);
-  uint8_t hs = bcd2bin(Wire.read() & 0x7F);  // hundreds of seconds
-  uint8_t ss = bcd2bin(Wire.read() & 0x7F);
-  uint8_t mm = bcd2bin(Wire.read());
-  uint8_t hh = bcd2bin(Wire.read());
-  Wire.read();
-  uint8_t d = bcd2bin(Wire.read());
-  uint8_t m = bcd2bin(Wire.read());
-  uint16_t y = bcd2bin(Wire.read()) + 2000;
+  Wire.requestFrom(DS1307_ADDRESS, 7);
+  uint8_t ss = bcd2bin(Wire._I2C_READ() & 0x7F);
+  uint8_t mm = bcd2bin(Wire._I2C_READ());
+  uint8_t hh = bcd2bin(Wire._I2C_READ());
+  Wire._I2C_READ();
+  uint8_t d = bcd2bin(Wire._I2C_READ());
+  uint8_t m = bcd2bin(Wire._I2C_READ());
+  uint16_t y = bcd2bin(Wire._I2C_READ()) + 2000;
 
   return DateTime (y, m, d, hh, mm, ss);
 }
 
-uint8_t RTC_DS1388::isrunning() {
+/**************************************************************************/
+/*!
+    @brief  Read the current mode of the SQW pin
+    @return Mode as Ds1307SqwPinMode enum
+*/
+/**************************************************************************/
+Ds1307SqwPinMode RTC_DS1307::readSqwPinMode() {
+  int mode;
+
   Wire.beginTransmission(DS1307_ADDRESS);
-    Wire.write((byte)0x0b);
+  Wire._I2C_WRITE(DS1307_CONTROL);
   Wire.endTransmission();
 
-  Wire.requestFrom(DS1307_ADDRESS, 1);
-  uint8_t ss = Wire.read();
-  return !(ss>>7); //OSF flag bit
+  Wire.requestFrom((uint8_t)DS1307_ADDRESS, (uint8_t)1);
+  mode = Wire._I2C_READ();
+
+  mode &= 0x93;
+  return static_cast<Ds1307SqwPinMode>(mode);
 }
 
-uint8_t RTC_DS1388::getEEPROMBank(uint16_t pos) {
-  if(pos > 255){
-    return DS1307_ADDRESS | DS1388_EEPROM_1;
-  } else {
-    return DS1307_ADDRESS | DS1388_EEPROM_0;
-  }
-}
-
-/*
- * DS1388 has 512 bytes EEPROM in 2 banks of 256 bytes each
- */
-void RTC_DS1388::EEPROMWrite(uint16_t pos, uint8_t c) {
-  if(pos >= 512){
-    return;
-  }
-  uint8_t rel_pos = pos % 256;
-  // Set address
-  Wire.beginTransmission(getEEPROMBank(pos));
-    Wire.write((byte)rel_pos);
-    // Wite data
-    Wire.write((byte)c);
-  Wire.endTransmission();
-#ifdef ENERGIA
-  delay(10); // Needed on MSP430 !!
-#endif
-}
-
-
-uint8_t RTC_DS1388::EEPROMRead(uint16_t pos) {
-  if(pos >= 512){
-    return 0;
-  }
-  uint8_t rel_pos = pos % 256;
-  Wire.beginTransmission(getEEPROMBank(pos));
-  // Set address
-  Wire.write((byte)rel_pos);
-  Wire.endTransmission(true); // Stay open
-  // Request one byte
-  Wire.requestFrom(getEEPROMBank(pos), (uint8_t)1);
-  uint8_t c = Wire.read();
-#ifdef ENERGIA
-  delay(10); // Needed on MSP430 !!
-#endif
-  return c;
-}
-
-/*
- * DS1388 has 512 bytes EEPROM in 2 banks of 256 bytes each.
- * EEPROM is arranged in 64 pages of 8 bytes each.
- * Page operations take a page number (0-63) and write/read 8 bytes
- */
-void RTC_DS1388::EEPROMWritePage(uint8_t page, uint8_t *data) {
-  if(page >= 64){
-    return;
-  }
-  Wire.beginTransmission(getEEPROMBank((uint16_t)page * 8));
-  uint8_t rel_pos =((uint16_t)page * 8) % 256;
-  Wire.write((byte)rel_pos);
-  for(uint8_t i=0; i<8; i++){
-    Wire.write((byte)data[i]);
-  }
-  Wire.endTransmission();
-#ifdef ENERGIA
-  delay(10); // Needed on MSP430 !!
-#endif
-}
-
-void RTC_DS1388::EEPROMReadPage(uint8_t page, uint8_t *data) {
-  if(page >= 64){
-    return;
-  }
-  Wire.beginTransmission(getEEPROMBank((uint16_t)page * 8));
-  uint8_t rel_pos =((uint16_t)page * 8) % 256;
-  // Set address
-  Wire.write((byte)rel_pos);
-  Wire.endTransmission(true); // Stay open
-  // Request 8 byte
-  Wire.requestFrom(getEEPROMBank((uint16_t)page * 8), (uint8_t)8);
-  for(uint8_t i=0; i<8; i++){
-    data[i] = Wire.read();
-  }
-  Wire.endTransmission();
-#ifdef ENERGIA
-  delay(10); // Needed on MSP430 !!
-#endif
-}
-
-void RTC_DS1388::startWatchdogTimer(uint8_t Seconds, uint8_t TSeconds) {
-  WDSeconds = bin2bcd(Seconds);
-  WDTSeconds = bin2bcd(TSeconds);
-  resetWatchdogTimer();
-}
-
-void RTC_DS1388::resetWatchdogTimer() {
-  //Disable the RTC watchdog first.
+/**************************************************************************/
+/*!
+    @brief  Change the SQW pin mode
+    @param mode The mode to use
+*/
+/**************************************************************************/
+void RTC_DS1307::writeSqwPinMode(Ds1307SqwPinMode mode) {
   Wire.beginTransmission(DS1307_ADDRESS);
-    Wire.write(0x0b);
-    Wire.write(0x00); //clear WF bit
-    Wire.write(0x00); //turn off WD
+  Wire._I2C_WRITE(DS1307_CONTROL);
+  Wire._I2C_WRITE(mode);
   Wire.endTransmission();
+}
 
-  //Set the watchdog timer to the desired time
+/**************************************************************************/
+/*!
+    @brief  Read data from the DS1307's NVRAM
+    @param buf Pointer to a buffer to store the data - make sure it's large enough to hold size bytes
+    @param size Number of bytes to read
+    @param address Starting NVRAM address, from 0 to 55
+*/
+/**************************************************************************/
+void RTC_DS1307::readnvram(uint8_t* buf, uint8_t size, uint8_t address) {
+  int addrByte = DS1307_NVRAM + address;
   Wire.beginTransmission(DS1307_ADDRESS);
-    Wire.write(0x08);
-    Wire.write(WDTSeconds);  //08h    time 00-99 first nibble is Tenths of Seconds, second nibble is Hundredths of Seconds
-    Wire.write(WDSeconds);  //09h - time 00-99 first nibble is Ten Seconds, second nibble is seconds
+  Wire._I2C_WRITE(addrByte);
   Wire.endTransmission();
 
-  //Enable the watchdog timer in the RTC.  0x0c -> 0x03 (WDE and WDE/RST)
+  Wire.requestFrom((uint8_t) DS1307_ADDRESS, size);
+  for (uint8_t pos = 0; pos < size; ++pos) {
+    buf[pos] = Wire._I2C_READ();
+  }
+}
+
+/**************************************************************************/
+/*!
+    @brief  Write data to the DS1307 NVRAM
+    @param address Starting NVRAM address, from 0 to 55
+    @param buf Pointer to buffer containing the data to write
+    @param size Number of bytes in buf to write to NVRAM
+*/
+/**************************************************************************/
+void RTC_DS1307::writenvram(uint8_t address, uint8_t* buf, uint8_t size) {
+  int addrByte = DS1307_NVRAM + address;
   Wire.beginTransmission(DS1307_ADDRESS);
-    Wire.write(0x0c);
-    Wire.write(0x03);
+  Wire._I2C_WRITE(addrByte);
+  for (uint8_t pos = 0; pos < size; ++pos) {
+    Wire._I2C_WRITE(buf[pos]);
+  }
   Wire.endTransmission();
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// RTC_PCF8563 implementation
-// contributed by @mariusster, see http://forum.jeelabs.net/comment/1902
-
-void RTC_PCF8563::adjust(const DateTime& dt) {
-    Wire.beginTransmission(PCF8563_ADDRESS);
-    Wire.write((byte) 0);
-    Wire.write((byte) 0x0);                 // control/status1
-    Wire.write((byte) 0x0);                 // control/status2
-    Wire.write(bin2bcd(dt.second()));       // set seconds
-    Wire.write(bin2bcd(dt.minute()));       // set minutes
-    Wire.write(bin2bcd(dt.hour()));         // set hour
-    Wire.write(bin2bcd(dt.day()));          // set day
-    Wire.write((byte) 0x01);                // set weekday
-    Wire.write(bin2bcd(dt.month()));        // set month, century to 1
-    Wire.write(bin2bcd(dt.year() - 2000));  // set year to 00-99
-    Wire.write((byte) 0x80);                // minute alarm value reset to 00
-    Wire.write((byte) 0x80);                // hour alarm value reset to 00
-    Wire.write((byte) 0x80);                // day alarm value reset to 00
-    Wire.write((byte) 0x80);                // weekday alarm value reset to 00
-    Wire.write((byte) 0x0);                 // set freqout 0= 32768khz, 1= 1hz
-    Wire.write((byte) 0x0);                 // timer off
-    Wire.endTransmission();
+/**************************************************************************/
+/*!
+    @brief  Shortcut to read one byte from NVRAM
+    @param address NVRAM address, 0 to 55
+    @return The byte read from NVRAM
+*/
+/**************************************************************************/
+uint8_t RTC_DS1307::readnvram(uint8_t address) {
+  uint8_t data;
+  readnvram(&data, 1, address);
+  return data;
 }
 
-DateTime RTC_PCF8563::now() {
-    Wire.beginTransmission(PCF8563_ADDRESS);
-    Wire.write(PCF8563_SEC_ADDR);
-    Wire.endTransmission();
-
-    Wire.requestFrom(PCF8563_ADDRESS, 7);
-    uint8_t ss = bcd2bin(Wire.read() & 0x7F);
-    uint8_t mm = bcd2bin(Wire.read() & 0x7F);
-    uint8_t hh = bcd2bin(Wire.read() & 0x3F);
-    uint8_t d = bcd2bin(Wire.read() & 0x3F);
-    Wire.read();
-    uint8_t m = bcd2bin(Wire.read()& 0x1F);
-    uint16_t y = bcd2bin(Wire.read()) + 2000;
-
-    return DateTime (y, m, d, hh, mm, ss);
+/**************************************************************************/
+/*!
+    @brief  Shortcut to write one byte to NVRAM
+    @param address NVRAM address, 0 to 55
+    @param data One byte to write
+*/
+/**************************************************************************/
+void RTC_DS1307::writenvram(uint8_t address, uint8_t data) {
+  writenvram(address, &data, 1);
 }
 
 
-///////////////////////////////////////////////////////////////////////////////
-// RTC_BQ32000 implementation
 
-void RTC_BQ32000::adjust(const DateTime& dt) {
-    Wire.beginTransmission(BQ32000_ADDRESS);
-    Wire.write((byte) 0);
-    Wire.write(bin2bcd(dt.second()));
-    Wire.write(bin2bcd(dt.minute()));
-    Wire.write(bin2bcd(dt.hour()));
-    Wire.write(bin2bcd(0));
-    Wire.write(bin2bcd(dt.day()));
-    Wire.write(bin2bcd(dt.month()));
-    Wire.write(bin2bcd(dt.year() - 2000));
-    Wire.endTransmission();
-}
+/** Alignment between the milis() timescale and the Unix timescale. These
+  two variables are updated on each call to now(), which prevents
+  rollover issues. Note that lastMillis is **not** the millis() value
+  of the last call to now(): it's the millis() value corresponding to
+  the last **full second** of Unix time. */
+uint32_t RTC_Millis::lastMillis;
+uint32_t RTC_Millis::lastUnix;
 
-DateTime RTC_BQ32000::now() {
-    Wire.beginTransmission(BQ32000_ADDRESS);
-    Wire.write((byte) 0);
-    Wire.endTransmission();
-
-    Wire.requestFrom(BQ32000_ADDRESS, 7);
-    uint8_t ss = bcd2bin(Wire.read());
-    uint8_t mm = bcd2bin(Wire.read());
-    uint8_t hh = bcd2bin(Wire.read());
-    Wire.read();
-    uint8_t d = bcd2bin(Wire.read());
-    uint8_t m = bcd2bin(Wire.read());
-    uint16_t y = bcd2bin(Wire.read()) + 2000;
-
-    return DateTime (y, m, d, hh, mm, ss);
-}
-
-void RTC_BQ32000::setIRQ(uint8_t state) {
-    /* Set IRQ square wave output state: 0=disabled, 1=1Hz, 2=512Hz.
-     */
-  uint8_t reg, value;
-    if (state) {
-      // Setting the frequency is a bit complicated on the BQ32000:
-      Wire.beginTransmission(BQ32000_ADDRESS);
-      Wire.write(BQ32000_SFKEY1);
-      Wire.write(BQ32000_SFKEY1_VAL);
-      Wire.write(BQ32000_SFKEY2_VAL);
-      Wire.write((state == 1) ? BQ32000_FTF_1HZ : BQ32000_FTF_512HZ);
-      Wire.endTransmission();
-    }
-    value = readRegister(BQ32000_CAL_CFG1);
-    value = (!state) ? value & ~(1<<BQ32000__FT) : value | (1<<BQ32000__FT);
-    writeRegister(BQ32000_CAL_CFG1, value);
-}
-
-void RTC_BQ32000::setIRQLevel(uint8_t level) {
-    /* Set IRQ output level when IRQ square wave output is disabled to
-     * LOW or HIGH.
-     */
-    uint8_t value;
-    // The IRQ active level bit is in the same register as the calibration
-    // settings, so we preserve its current state:
-    value = readRegister(BQ32000_CAL_CFG1);
-    value = (!level) ? value & ~(1<<BQ32000__OUT) : value | (1<<BQ32000__OUT);
-    writeRegister(BQ32000_CAL_CFG1, value);
-}
-
-void RTC_BQ32000::setCalibration(int8_t value) {
-    /* Sets the calibration value to given value in the range -31 - 31, which
-     * corresponds to -126ppm - +63ppm; see table 13 in th BQ32000 datasheet.
-     */
-    uint8_t val;
-    if (value > 31) value = 31;
-    if (value < -31) value = -31;
-    val = (uint8_t) (value < 0) ? -value | (1<<BQ32000__CAL_S) : value;
-    val |= readRegister(BQ32000_CAL_CFG1) & ~0x3f;
-    writeRegister(BQ32000_CAL_CFG1, val);
-}
-
-void RTC_BQ32000::setCharger(int state) {
-    /* If using a super capacitor instead of a battery for backup power, use this
-     * method to set the state of the trickle charger: 0=disabled, 1=low-voltage
-     * charge, 2=high-voltage charge. In low-voltage charge mode, the super cap is
-     * charged through a diode with a voltage drop of about 0.5V, so it will charge
-     * up to VCC-0.5V. In high-voltage charge mode the diode is bypassed and the super
-     * cap will be charged up to VCC (make sure the charge voltage does not exceed your
-     * super cap's voltage rating!!).
-     */
-    // First disable charger regardless of state (prevents it from
-    // possible starting up in the high voltage mode when the low
-    // voltage mode is requested):
-    uint8_t value;
-    writeRegister(BQ32000_TCH2, 0);
-    if (state <= 0 || state > 2) return;
-    value = BQ32000_CHARGE_ENABLE;
-    if (state == 2) {
-        // High voltage charge enable:
-        value |= (1 << BQ32000__TCFE);
-    }
-    writeRegister(BQ32000_CFG2, value);
-    // Now enable charger:
-    writeRegister(BQ32000_TCH2, 1 << BQ32000__TCH2_BIT);
-}
-
-
-uint8_t RTC_BQ32000::readRegister(uint8_t address) {
-    /* Read and return the value in the register at the given address.
-     */
-    Wire.beginTransmission(BQ32000_ADDRESS);
-    Wire.write((byte) address);
-    Wire.endTransmission();
-    Wire.requestFrom(BQ32000_ADDRESS, 1);
-    // Get register state:
-    return Wire.read();
-}
-
-uint8_t RTC_BQ32000::writeRegister(uint8_t address, uint8_t value) {
-    /* Write the given value to the register at the given address.
-     */
-    Wire.beginTransmission(BQ32000_ADDRESS);
-    Wire.write(address);
-    Wire.write(value);
-    Wire.endTransmission();
-}
-
-uint8_t RTC_BQ32000::isrunning() {
-    return !(readRegister(0x0)>>7);
-}
-
-
-////////////////////////////////////////////////////////////////////////////////
-// RTC_Millis implementation
-
-long RTC_Millis::offset = 0;
-
+/**************************************************************************/
+/*!
+    @brief  Set the current date/time of the RTC_Millis clock.
+    @param dt DateTime object with the desired date and time
+*/
+/**************************************************************************/
 void RTC_Millis::adjust(const DateTime& dt) {
-    offset = dt.get() - millis() / 1000;
+  lastMillis = millis();
+  lastUnix = dt.unixtime();
 }
 
+/**************************************************************************/
+/*!
+    @brief  Return a DateTime object containing the current date/time.
+            Note that computing (millis() - lastMillis) is rollover-safe as long
+            as this method is called at least once every 49.7 days.
+    @return DateTime object containing current time
+*/
+/**************************************************************************/
 DateTime RTC_Millis::now() {
-    return offset + millis() / 1000;
+  uint32_t elapsedSeconds = (millis() - lastMillis) / 1000;
+  lastMillis += elapsedSeconds * 1000;
+  lastUnix += elapsedSeconds;
+  return lastUnix;
 }
 
+
+
+/** Number of microseconds reported by micros() per "true" (calibrated) second. */
+uint32_t RTC_Micros::microsPerSecond = 1000000;
+
+/** The timing logic is identical to RTC_Millis. */
+uint32_t RTC_Micros::lastMicros;
+uint32_t RTC_Micros::lastUnix;
+
+/**************************************************************************/
+/*!
+    @brief  Set the current date/time of the RTC_Micros clock.
+    @param dt DateTime object with the desired date and time
+*/
+/**************************************************************************/
+void RTC_Micros::adjust(const DateTime& dt) {
+  lastMicros = micros();
+  lastUnix = dt.unixtime();
+}
+
+/**************************************************************************/
+/*!
+    @brief  Adjust the RTC_Micros clock to compensate for system clock drift
+    @param ppm Adjustment to make
+*/
+/**************************************************************************/
+// A positive adjustment makes the clock faster.
+void RTC_Micros::adjustDrift(int ppm) {
+  microsPerSecond = 1000000 - ppm;
+}
+
+/**************************************************************************/
+/*!
+    @brief  Get the current date/time from the RTC_Micros clock.
+    @return DateTime object containing the current date/time
+*/
+/**************************************************************************/
+DateTime RTC_Micros::now() {
+  uint32_t elapsedSeconds = (micros() - lastMicros) / microsPerSecond;
+  lastMicros += elapsedSeconds * microsPerSecond;
+  lastUnix += elapsedSeconds;
+  return lastUnix;
+}
+
+
+
+/**************************************************************************/
+/*!
+    @brief  Start using the PCF8523
+    @return True
+*/
+/**************************************************************************/
 ////////////////////////////////////////////////////////////////////////////////
+// RTC_PCF8563 implementation
+boolean RTC_PCF8523::begin(void) {
+  Wire.begin();
+  return true;
+}
+
+/**************************************************************************/
+/*!
+    @brief  Check control register 3 to see if we've run adjust() yet (setting the date/time and battery switchover mode)
+    @return True if the PCF8523 has been set up, false if not
+*/
+/**************************************************************************/
+boolean RTC_PCF8523::initialized(void) {
+  Wire.beginTransmission(PCF8523_ADDRESS);
+  Wire._I2C_WRITE((byte)PCF8523_CONTROL_3);
+  Wire.endTransmission();
+
+  Wire.requestFrom(PCF8523_ADDRESS, 1);
+  uint8_t ss = Wire._I2C_READ();
+  return ((ss & 0xE0) != 0xE0);
+}
+
+/**************************************************************************/
+/*!
+    @brief  Set the date and time, set battery switchover mode
+    @param dt DateTime to set
+*/
+/**************************************************************************/
+void RTC_PCF8523::adjust(const DateTime& dt) {
+  Wire.beginTransmission(PCF8523_ADDRESS);
+  Wire._I2C_WRITE((byte)3); // start at location 3
+  Wire._I2C_WRITE(bin2bcd(dt.second()));
+  Wire._I2C_WRITE(bin2bcd(dt.minute()));
+  Wire._I2C_WRITE(bin2bcd(dt.hour()));
+  Wire._I2C_WRITE(bin2bcd(dt.day()));
+  Wire._I2C_WRITE(bin2bcd(0)); // skip weekdays
+  Wire._I2C_WRITE(bin2bcd(dt.month()));
+  Wire._I2C_WRITE(bin2bcd(dt.year() - 2000));
+  Wire.endTransmission();
+
+  // set to battery switchover mode
+  Wire.beginTransmission(PCF8523_ADDRESS);
+  Wire._I2C_WRITE((byte)PCF8523_CONTROL_3);
+  Wire._I2C_WRITE((byte)0x00);
+  Wire.endTransmission();
+}
+
+/**************************************************************************/
+/*!
+    @brief  Get the current date/time
+    @return DateTime object containing the current date/time
+*/
+/**************************************************************************/
+DateTime RTC_PCF8523::now() {
+  Wire.beginTransmission(PCF8523_ADDRESS);
+  Wire._I2C_WRITE((byte)3);
+  Wire.endTransmission();
+
+  Wire.requestFrom(PCF8523_ADDRESS, 7);
+  uint8_t ss = bcd2bin(Wire._I2C_READ() & 0x7F);
+  uint8_t mm = bcd2bin(Wire._I2C_READ());
+  uint8_t hh = bcd2bin(Wire._I2C_READ());
+  uint8_t d = bcd2bin(Wire._I2C_READ());
+  Wire._I2C_READ();  // skip 'weekdays'
+  uint8_t m = bcd2bin(Wire._I2C_READ());
+  uint16_t y = bcd2bin(Wire._I2C_READ()) + 2000;
+
+  return DateTime (y, m, d, hh, mm, ss);
+}
+
+/**************************************************************************/
+/*!
+    @brief  Read the mode of the SQW pin on the PCF8523
+    @return SQW pin mode as a Pcf8523SqwPinMode enum
+*/
+/**************************************************************************/
+Pcf8523SqwPinMode RTC_PCF8523::readSqwPinMode() {
+  int mode;
+
+  Wire.beginTransmission(PCF8523_ADDRESS);
+  Wire._I2C_WRITE(PCF8523_CLKOUTCONTROL);
+  Wire.endTransmission();
+
+  Wire.requestFrom((uint8_t)PCF8523_ADDRESS, (uint8_t)1);
+  mode = Wire._I2C_READ();
+
+  mode >>= 3;
+  mode &= 0x7;
+  return static_cast<Pcf8523SqwPinMode>(mode);
+}
+
+/**************************************************************************/
+/*!
+    @brief  Set the SQW pin mode on the PCF8523
+    @param mode The mode to set, see the Pcf8523SqwPinMode enum for options
+*/
+/**************************************************************************/
+void RTC_PCF8523::writeSqwPinMode(Pcf8523SqwPinMode mode) {
+  Wire.beginTransmission(PCF8523_ADDRESS);
+  Wire._I2C_WRITE(PCF8523_CLKOUTCONTROL);
+  Wire._I2C_WRITE(mode << 3);
+  Wire.endTransmission();
+}
+
+/**************************************************************************/
+/*!
+    @brief  Use an offset to calibrate the PCF8523. This can be used for:
+            - Aging adjustment
+            - Temperature compensation
+            - Accuracy tuning
+    @param mode The offset mode to use, once every two hours or once every minute. See the Pcf8523OffsetMode enum.
+    @param offset Offset value from -64 to +63. See the datasheet for exact ppm values.
+*/
+/**************************************************************************/
+void RTC_PCF8523::calibrate(Pcf8523OffsetMode mode, int8_t offset) {
+  uint8_t reg = (uint8_t) offset & 0x7F;
+  reg |= mode;
+
+  Wire.beginTransmission(PCF8523_ADDRESS);
+  Wire._I2C_WRITE(PCF8523_OFFSET);
+  Wire._I2C_WRITE(reg);
+  Wire.endTransmission();
+}
+
+
+
+/**************************************************************************/
+/*!
+    @brief  Start I2C for the DS3231 and test succesful connection
+    @return True if Wire can find DS3231 or false otherwise.
+*/
+/**************************************************************************/
+boolean RTC_DS3231::begin(void) {
+  Wire.begin();
+  Wire.beginTransmission (DS3231_ADDRESS);
+  if (Wire.endTransmission() == 0) return true;												
+  return false;
+}
+
+/**************************************************************************/
+/*!
+    @brief  Check the status register Oscillator Stop Flag to see if the DS3231 stopped due to power loss
+    @return True if the bit is set (oscillator stopped) or false if it is running
+*/
+/**************************************************************************/
+bool RTC_DS3231::lostPower(void) {
+  return (read_i2c_register(DS3231_ADDRESS, DS3231_STATUSREG) >> 7);
+}
+
+/**************************************************************************/
+/*!
+    @brief  Set the date and flip the Oscillator Stop Flag
+    @param dt DateTime object containing the date/time to set
+*/
+/**************************************************************************/
+void RTC_DS3231::adjust(const DateTime& dt) {
+  Wire.beginTransmission(DS3231_ADDRESS);
+  Wire._I2C_WRITE((byte)0); // start at location 0
+  Wire._I2C_WRITE(bin2bcd(dt.second()));
+  Wire._I2C_WRITE(bin2bcd(dt.minute()));
+  Wire._I2C_WRITE(bin2bcd(dt.hour()));
+  Wire._I2C_WRITE(bin2bcd(0));
+  Wire._I2C_WRITE(bin2bcd(dt.day()));
+  Wire._I2C_WRITE(bin2bcd(dt.month()));
+  Wire._I2C_WRITE(bin2bcd(dt.year() - 2000));
+  Wire.endTransmission();
+
+  uint8_t statreg = read_i2c_register(DS3231_ADDRESS, DS3231_STATUSREG);
+  statreg &= ~0x80; // flip OSF bit
+  write_i2c_register(DS3231_ADDRESS, DS3231_STATUSREG, statreg);
+}
+
+/**************************************************************************/
+/*!
+    @brief  Get the current date/time
+    @return DateTime object with the current date/time
+*/
+/**************************************************************************/
+DateTime RTC_DS3231::now() {
+  Wire.beginTransmission(DS3231_ADDRESS);
+  Wire._I2C_WRITE((byte)0);
+  Wire.endTransmission();
+
+  Wire.requestFrom(DS3231_ADDRESS, 7);
+  uint8_t ss = bcd2bin(Wire._I2C_READ() & 0x7F);
+  uint8_t mm = bcd2bin(Wire._I2C_READ());
+  uint8_t hh = bcd2bin(Wire._I2C_READ());
+  Wire._I2C_READ();
+  uint8_t d = bcd2bin(Wire._I2C_READ());
+  uint8_t m = bcd2bin(Wire._I2C_READ());
+  uint16_t y = bcd2bin(Wire._I2C_READ()) + 2000;
+
+  return DateTime (y, m, d, hh, mm, ss);
+}
+
+/**************************************************************************/
+/*!
+    @brief  Read the SQW pin mode
+    @return Pin mode, see Ds3231SqwPinMode enum
+*/
+/**************************************************************************/
+Ds3231SqwPinMode RTC_DS3231::readSqwPinMode() {
+  int mode;
+
+  Wire.beginTransmission(DS3231_ADDRESS);
+  Wire._I2C_WRITE(DS3231_CONTROL);
+  Wire.endTransmission();
+
+  Wire.requestFrom((uint8_t)DS3231_ADDRESS, (uint8_t)1);
+  mode = Wire._I2C_READ();
+
+  mode &= 0x93;
+  return static_cast<Ds3231SqwPinMode>(mode);
+}
+
+/**************************************************************************/
+/*!
+    @brief  Set the SQW pin mode
+    @param mode Desired mode, see Ds3231SqwPinMode enum
+*/
+/**************************************************************************/
+void RTC_DS3231::writeSqwPinMode(Ds3231SqwPinMode mode) {
+  uint8_t ctrl;
+  ctrl = read_i2c_register(DS3231_ADDRESS, DS3231_CONTROL);
+
+  ctrl &= ~0x04; // turn off INTCON
+  ctrl &= ~0x18; // set freq bits to 0
+
+  if (mode == DS3231_OFF) {
+    ctrl |= 0x04; // turn on INTCN
+  } else {
+    ctrl |= mode;
+  }
+  write_i2c_register(DS3231_ADDRESS, DS3231_CONTROL, ctrl);
+
+  //Serial.println( read_i2c_register(DS3231_ADDRESS, DS3231_CONTROL), HEX);
+}
+
+/**************************************************************************/
+/*!
+    @brief  Get the current temperature from the DS3231's temperature sensor
+    @return Current temperature (float)
+*/
+/**************************************************************************/
+float RTC_DS3231::getTemperature()
+{
+  uint8_t msb, lsb;
+  Wire.beginTransmission(DS3231_ADDRESS);
+  Wire._I2C_WRITE(DS3231_TEMPERATUREREG);
+  Wire.endTransmission();
+
+  Wire.requestFrom(DS3231_ADDRESS, 2);
+  msb = Wire._I2C_READ();
+  lsb = Wire._I2C_READ();
+
+//  Serial.print("msb=");
+//  Serial.print(msb,HEX);
+//  Serial.print(", lsb=");
+//  Serial.println(lsb,HEX);
+
+  return (float) msb + (lsb >> 6) * 0.25f;
+}

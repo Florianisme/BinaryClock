@@ -1,152 +1,345 @@
-// A library for handling real-time clocks, dates, etc.
-// 2010-02-04 <jc@wippler.nl> http://opensource.org/licenses/mit-license.php
-// 2012-11-08 RAM methods - idreammicro.com
-// 2012-11-14 SQW/OUT methods - idreammicro.com
+/**************************************************************************/
+/*!
+  @file     RTClib.h
 
-// Simple general-purpose date/time class (no TZ / DST / leap second handling!)
+  Original library by JeeLabs http://news.jeelabs.org/code/, released to the public domain
+
+  License: MIT (see LICENSE)
+
+  This is a fork of JeeLab's fantastic real time clock library for Arduino.
+
+  For details on using this library with an RTC module like the DS1307, PCF8523, or DS3231,
+  see the guide at: https://learn.adafruit.com/ds1307-real-time-clock-breakout-board-kit/overview
+
+  Adafruit invests time and resources providing this open source code,
+  please support Adafruit and open-source hardware by purchasing
+  products from Adafruit!
+*/
+/**************************************************************************/
+
+#ifndef _RTCLIB_H_
+#define _RTCLIB_H_
+
+#include <Arduino.h>
+class TimeSpan;
+
+/** Registers */
+#define PCF8523_ADDRESS       0x68  ///< I2C address for PCF8523
+#define PCF8523_CLKOUTCONTROL 0x0F  ///< Timer and CLKOUT control register
+#define PCF8523_CONTROL_3     0x02  ///< Control and status register 3
+#define PCF8523_OFFSET        0x0E  ///< Offset register
+
+#define DS1307_ADDRESS        0x68  ///< I2C address for DS1307
+#define DS1307_CONTROL        0x07  ///< Control register
+#define DS1307_NVRAM          0x08  ///< Start of RAM registers - 56 bytes, 0x08 to 0x3f
+
+#define DS3231_ADDRESS        0x68  ///< I2C address for DS3231
+#define DS3231_CONTROL        0x0E  ///< Control register
+#define DS3231_STATUSREG      0x0F  ///< Status register
+#define DS3231_TEMPERATUREREG	0x11  ///< Temperature register (high byte - low byte is at 0x12), 10-bit temperature value
+
+/** Constants */
+#define SECONDS_PER_DAY       86400L  ///< 60 * 60 * 24
+#define SECONDS_FROM_1970_TO_2000 946684800  ///< Unixtime for 2000-01-01 00:00:00, useful for initialization
+
+
+/**************************************************************************/
+/*!
+    @brief  Simple general-purpose date/time class (no TZ / DST / leap second handling!).
+            See http://en.wikipedia.org/wiki/Leap_second
+*/
+/**************************************************************************/
 class DateTime {
 public:
-    DateTime (long t =0);
-    DateTime (uint16_t year, uint8_t month, uint8_t day,
-                uint8_t hour =0, uint8_t min =0, uint8_t sec =0);
-    DateTime (const char* date, const char* time);
+  DateTime (uint32_t t = SECONDS_FROM_1970_TO_2000);
+  DateTime (uint16_t year, uint8_t month, uint8_t day,
+              uint8_t hour = 0, uint8_t min = 0, uint8_t sec = 0);
+  DateTime (const DateTime& copy);
+  DateTime (const char* date, const char* time);
+  DateTime (const __FlashStringHelper* date, const __FlashStringHelper* time);
+  char* toString(char* buffer);
 
-    uint16_t year() const       { return 2000 + yOff; }
-    uint8_t month() const       { return m; }
-    uint8_t day() const         { return d; }
-    uint8_t hour() const        { return hh; }
-    uint8_t minute() const      { return mm; }
-    uint8_t second() const      { return ss; }
-    uint8_t dayOfWeek() const;
+  /*!
+      @brief  Return the year, stored as an offset from 2000
+      @return uint16_t year
+  */
+  uint16_t year() const       { return 2000 + yOff; }
+  /*!
+      @brief  Return month
+      @return uint8_t month
+  */
+  uint8_t month() const       { return m; }
+  /*!
+      @brief  Return day
+      @return uint8_t day
+  */
+  uint8_t day() const         { return d; }
+  /*!
+      @brief  Return hours
+      @return uint8_t hours
+  */
+  uint8_t hour() const        { return hh; }
+  /*!
+      @brief  Return minutes
+      @return uint8_t minutes
+  */
+  uint8_t minute() const      { return mm; }
+  /*!
+      @brief  Return seconds
+      @return uint8_t seconds
+  */
+  uint8_t second() const      { return ss; }
 
-    // 32-bit times as seconds since 1/1/2000
-    long get() const;
+  uint8_t dayOfTheWeek() const;
+
+  /** 32-bit times as seconds since 1/1/2000 */
+  long secondstime() const;
+
+  /** 32-bit times as seconds since 1/1/1970 */
+  uint32_t unixtime(void) const;
+
+  /** ISO 8601 Timestamp function */
+  enum timestampOpt{
+    TIMESTAMP_FULL, // YYYY-MM-DDTHH:MM:SS
+    TIMESTAMP_TIME, // HH:MM:SS
+    TIMESTAMP_DATE  // YYYY-MM-DD
+  };
+  String timestamp(timestampOpt opt = TIMESTAMP_FULL);
+
+  DateTime operator+(const TimeSpan& span);
+  DateTime operator-(const TimeSpan& span);
+  TimeSpan operator-(const DateTime& right);
+  bool operator<(const DateTime& right) const;
+  /*!
+      @brief  Test if one DateTime is greater (later) than another
+      @param right DateTime object to compare
+      @return True if the left object is greater than the right object, false otherwise
+  */
+  bool operator>(const DateTime& right) const  { return right < *this; }
+  /*!
+      @brief  Test if one DateTime is less (earlier) than or equal to another
+      @param right DateTime object to compare
+      @return True if the left object is less than or equal to the right object, false otherwise
+  */
+  bool operator<=(const DateTime& right) const { return !(*this > right); }
+  /*!
+      @brief  Test if one DateTime is greater (later) than or equal to another
+      @param right DateTime object to compare
+      @return True if the left object is greater than or equal to the right object, false otherwise
+  */
+  bool operator>=(const DateTime& right) const { return !(*this < right); }
+  bool operator==(const DateTime& right) const;
+  /*!
+      @brief  Test if two DateTime objects not equal
+      @param right DateTime object to compare
+      @return True if the two objects are not equal, false if they are
+  */
+  bool operator!=(const DateTime& right) const { return !(*this == right); }
 
 protected:
-    uint8_t yOff, m, d, hh, mm, ss;
+  uint8_t yOff;   ///< Year offset from 2000
+  uint8_t m;      ///< Month 1-12
+  uint8_t d;      ///< Day 1-31
+  uint8_t hh;     ///< Hours 0-23
+  uint8_t mm;     ///< Minutes 0-59
+  uint8_t ss;     ///< Seconds 0-59
 };
 
-// RTC based on the DS1307 chip connected via I2C and the Wire library
+
+/**************************************************************************/
+/*!
+    @brief  Timespan which can represent changes in time with seconds accuracy.
+*/
+/**************************************************************************/
+class TimeSpan {
+public:
+  TimeSpan (int32_t seconds = 0);
+  TimeSpan (int16_t days, int8_t hours, int8_t minutes, int8_t seconds);
+  TimeSpan (const TimeSpan& copy);
+
+  /*!
+      @brief  Number of days in the TimeSpan
+              e.g. 4
+      @return int16_t days
+  */
+  int16_t days() const         { return _seconds / 86400L; }
+  /*!
+      @brief  Number of hours in the TimeSpan
+              This is not the total hours, it includes the days
+              e.g. 4 days, 3 hours - NOT 99 hours
+      @return int8_t hours
+  */
+  int8_t  hours() const        { return _seconds / 3600 % 24; }
+  /*!
+      @brief  Number of minutes in the TimeSpan
+              This is not the total minutes, it includes days/hours
+              e.g. 4 days, 3 hours, 27 minutes
+      @return int8_t minutes
+  */
+  int8_t  minutes() const      { return _seconds / 60 % 60; }
+  /*!
+      @brief  Number of seconds in the TimeSpan
+              This is not the total seconds, it includes the days/hours/minutes
+              e.g. 4 days, 3 hours, 27 minutes, 7 seconds
+      @return int8_t seconds
+  */
+  int8_t  seconds() const      { return _seconds % 60; }
+  /*!
+      @brief  Total number of seconds in the TimeSpan, e.g. 358027
+      @return int32_t seconds
+  */
+  int32_t totalseconds() const { return _seconds; }
+
+  TimeSpan operator+(const TimeSpan& right);
+  TimeSpan operator-(const TimeSpan& right);
+
+protected:
+  int32_t _seconds;   ///< Actual TimeSpan value is stored as seconds
+};
+
+
+
+/** DS1307 SQW pin mode settings */
+enum Ds1307SqwPinMode {
+  DS1307_OFF              = 0x00, // Low
+  DS1307_ON               = 0x80, // High
+  DS1307_SquareWave1HZ    = 0x10, // 1Hz square wave
+  DS1307_SquareWave4kHz   = 0x11, // 4kHz square wave
+  DS1307_SquareWave8kHz   = 0x12, // 8kHz square wave
+  DS1307_SquareWave32kHz  = 0x13  // 32kHz square wave
+};
+
+/**************************************************************************/
+/*!
+    @brief  RTC based on the DS1307 chip connected via I2C and the Wire library
+*/
+/**************************************************************************/
 class RTC_DS1307 {
 public:
-
-    // SQW/OUT frequencies.
-    enum Frequencies
-    {
-        Frequency_1Hz,
-        Frequency_4096Hz,
-        Frequency_8192Hz,
-        Frequency_32768Hz
-    };
-
-    static void begin() {}
-    static void adjust(const DateTime& dt);
-    static DateTime now();
-    static uint8_t isrunning();
-
-    // SQW/OUT functions.
-    void setSqwOutLevel(uint8_t level);
-    void setSqwOutSignal(Frequencies frequency);
-
-    // RAM registers read/write functions. Address locations 08h to 3Fh.
-    // Max length = 56 bytes.
-    static uint8_t readByteInRam(uint8_t address);
-    static void readBytesInRam(uint8_t address, uint8_t length, uint8_t* p_data);
-    static void writeByteInRam(uint8_t address, uint8_t data);
-    static void writeBytesInRam(uint8_t address, uint8_t length, uint8_t* p_data);
-
-    // utility functions
-    static uint8_t bcd2bin (uint8_t val) { return val - 6 * (val >> 4); }
-    static uint8_t bin2bcd (uint8_t val) { return val + 6 * (val / 10); }
+  boolean begin(void);
+  static void adjust(const DateTime& dt);
+  uint8_t isrunning(void);
+  static DateTime now();
+  static Ds1307SqwPinMode readSqwPinMode();
+  static void writeSqwPinMode(Ds1307SqwPinMode mode);
+  uint8_t readnvram(uint8_t address);
+  void readnvram(uint8_t* buf, uint8_t size, uint8_t address);
+  void writenvram(uint8_t address, uint8_t data);
+  void writenvram(uint8_t address, uint8_t* buf, uint8_t size);
 };
 
 
-// DS1388 version
-class RTC_DS1388 {
-protected:
-    static uint8_t WDSeconds;
-    static uint8_t WDTSeconds;
+
+/** DS3231 SQW pin mode settings */
+enum Ds3231SqwPinMode {
+  DS3231_OFF            = 0x01, // Off
+  DS3231_SquareWave1Hz  = 0x00, // 1Hz square wave
+  DS3231_SquareWave1kHz = 0x08, // 1kHz square wave
+  DS3231_SquareWave4kHz = 0x10, // 4kHz square wave
+  DS3231_SquareWave8kHz = 0x18  // 8kHz square wave
+};
+
+/**************************************************************************/
+/*!
+    @brief  RTC based on the DS3231 chip connected via I2C and the Wire library
+*/
+/**************************************************************************/
+class RTC_DS3231 {
 public:
-    static void begin() {};
-    static void adjust(const DateTime& dt);
-    static DateTime now();
-    static uint8_t isrunning();
-
-    // EEPROM
-    static uint8_t getEEPROMBank(uint16_t pos);
-    static void EEPROMWrite(uint16_t pos, uint8_t c);
-    static uint8_t EEPROMRead(uint16_t pos);
-    static void EEPROMWritePage(uint8_t page, uint8_t* data);
-    static void EEPROMReadPage(uint8_t page, uint8_t* buffer);
-
-    //Watchdog
-    static void startWatchdogTimer(uint8_t Seconds, uint8_t TSeconds);
-    static void resetWatchdogTimer();
-
-    // utility functions
-    static uint8_t bcd2bin (uint8_t val) { return val - 6 * (val >> 4); }
-    static uint8_t bin2bcd (uint8_t val) { return val + 6 * (val / 10); }
+  boolean begin(void);
+  static void adjust(const DateTime& dt);
+  bool lostPower(void);
+  static DateTime now();
+  static Ds3231SqwPinMode readSqwPinMode();
+  static void writeSqwPinMode(Ds3231SqwPinMode mode);
+  static float getTemperature();  // in Celcius degree
 };
 
 
 
-// RTC based on the PCF8563 chip connected via I2C and the Wire library
-// contributed by @mariusster, see http://forum.jeelabs.net/comment/1902
-class RTC_PCF8563 {
+/** PCF8523 SQW pin mode settings */
+enum Pcf8523SqwPinMode {
+  PCF8523_OFF             = 7, // Off
+  PCF8523_SquareWave1HZ   = 6, // 1Hz square wave
+  PCF8523_SquareWave32HZ  = 5, // 32Hz square wave
+  PCF8523_SquareWave1kHz  = 4, // 1kHz square wave
+  PCF8523_SquareWave4kHz  = 3, // 4kHz square wave
+  PCF8523_SquareWave8kHz  = 2, // 8kHz square wave
+  PCF8523_SquareWave16kHz = 1, // 16kHz square wave
+  PCF8523_SquareWave32kHz = 0  // 32kHz square wave
+};
+
+/** PCF8523 Offset modes for making temperature/aging/accuracy adjustments */
+enum Pcf8523OffsetMode {
+  PCF8523_TwoHours = 0x00,  // Offset made every two hours
+  PCF8523_OneMinute = 0x80  // Offset made every minute
+};
+
+/**************************************************************************/
+/*!
+    @brief  RTC based on the PCF8523 chip connected via I2C and the Wire library
+*/
+/**************************************************************************/
+class RTC_PCF8523 {
 public:
-    static void begin() {}
-    static void adjust(const DateTime& dt);
-    static DateTime now();
+  boolean begin(void);
+  void adjust(const DateTime& dt);
+  boolean initialized(void);
+  static DateTime now();
 
-    // utility functions
-    static uint8_t bcd2bin (uint8_t val) { return val - 6 * (val >> 4); }
-    static uint8_t bin2bcd (uint8_t val) { return val + 6 * (val / 10); }
+  Pcf8523SqwPinMode readSqwPinMode();
+  void writeSqwPinMode(Pcf8523SqwPinMode mode);
+  void calibrate(Pcf8523OffsetMode mode, int8_t offset);
 };
 
 
-// TI BQ32000 I2C RTC
-class RTC_BQ32000 {
-public:
-    static void begin() {}
-    static void adjust(const DateTime& dt);
-    static DateTime now();
-    static uint8_t isrunning();
-
-    static void setIRQ(uint8_t state);
-    /* Set IRQ output state: 0=disabled, 1=1Hz, 2=512Hz.
-     */
-    static void setIRQLevel(uint8_t level);
-    /* Set IRQ output active state to LOW or HIGH.
-     */
-    static void setCalibration(int8_t value);
-    /* Sets the calibration value to given value in the range -31 - 31, which
-     * corresponds to -126ppm - +63ppm; see table 13 in th BQ32000 datasheet.
-     */
-    static void setCharger(int state);
-    /* If using a super capacitor instead of a battery for backup power, use this
-       method to set the state of the trickle charger: 0=disabled, 1=low-voltage
-       charge, 2=high-voltage charge. In low-voltage charge mode, the super cap is
-       charged through a diode with a voltage drop of about 0.5V, so it will charge
-       up to VCC-0.5V. In high-voltage charge mode the diode is bypassed and the super
-       cap will be charged up to VCC (make sure the charge voltage does not exceed your
-       super cap's voltage rating!!). */
-
-    // utility functions:
-    static uint8_t readRegister(uint8_t address);
-    static uint8_t writeRegister(uint8_t address, uint8_t value);
-    static uint8_t bcd2bin (uint8_t val) { return val - 6 * (val >> 4); }
-    static uint8_t bin2bcd (uint8_t val) { return val + 6 * (val / 10); }
-};
-
-
-// RTC using the internal millis() clock, has to be initialized before use
-// NOTE: this clock won't be correct once the millis() timer rolls over (>49d?)
+/**************************************************************************/
+/*!
+    @brief  RTC using the internal millis() clock, has to be initialized before use.
+            NOTE: this is immune to millis() rollover events.
+*/
+/**************************************************************************/
 class RTC_Millis {
 public:
-    static void begin(const DateTime& dt) { adjust(dt); }
-    static void adjust(const DateTime& dt);
-    static DateTime now();
+  /*!
+      @brief  Start the RTC
+      @param dt DateTime object with the date/time to set
+  */
+  static void begin(const DateTime& dt) { adjust(dt); }
+  static void adjust(const DateTime& dt);
+  static DateTime now();
 
 protected:
-    static long offset;
+  static uint32_t lastUnix;   ///< Unix time from the previous call to now() - prevents rollover issues
+  static uint32_t lastMillis; ///< the millis() value corresponding to the last **full second** of Unix time
 };
+
+
+
+/**************************************************************************/
+/*!
+    @brief  RTC using the internal micros() clock, has to be initialized before
+            use. Unlike RTC_Millis, this can be tuned in order to compensate for
+            the natural drift of the system clock. Note that now() has to be
+            called more frequently than the micros() rollover period, which is
+            approximately 71.6 minutes.
+*/
+/**************************************************************************/
+class RTC_Micros {
+public:
+  /*!
+      @brief  Start the RTC
+      @param dt DateTime object with the date/time to set
+  */
+  static void begin(const DateTime& dt) { adjust(dt); }
+  static void adjust(const DateTime& dt);
+  static void adjustDrift(int ppm);
+  static DateTime now();
+
+protected:
+  static uint32_t microsPerSecond;  ///< Number of microseconds reported by micros() per "true" (calibrated) second
+  static uint32_t lastUnix;         ///< Unix time from the previous call to now() - prevents rollover issues
+  static uint32_t lastMicros;       ///< micros() value corresponding to the last full second of Unix time
+};
+
+#endif // _RTCLIB_H_

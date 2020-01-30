@@ -1,27 +1,33 @@
-#include "src/Ticker/Ticker.h"
-void update();
-Ticker ticker(update, 1000);
+#define DEBUG false
+
+#include "ByteFormatter.cpp"
+#include "RTC.cpp"
+#include "ShiftRegisterOutput.cpp"
+
+ShiftRegisterOutput shiftRegisterOutput;
+ByteFormatter byteFormatter;
+RTC rtc;
 
 void setup() {
-  initRTC();
-  initShiftRegisterOutput();
-  resetOutput();
-  ticker.start();
+  rtc.initRTC();
 }
 
 void loop() {
-  ticker.update();  
+  updateTime();
 }
 
-void update() {
-  int hour = getHours();
-  int minute = getMinutes();
-  int second = getSeconds();
+void updateTime() {
+  uint8_t hour = rtc.getHours();
+  uint8_t minute = rtc.getMinutes();
+  uint8_t second = rtc.getSeconds();
 
-  byte hourByte = getTimeByte(hour);
-  byte minuteByte = getTimeByte(minute);
-  byte secondByte = getTimeByte(second);
+  uint8_t hourByte = byteFormatter.getTimeByte(hour);
+  uint8_t minuteByte = byteFormatter.getTimeByte(minute);
+  uint8_t secondByte = byteFormatter.getTimeByte(second);
 
-  sendTimeData(hourByte, minuteByte, secondByte);
+  shiftRegisterOutput.updateShiftOutput(hourByte, minuteByte, secondByte);
+
+#if DEBUG
   printDebugInformation(hourByte, minuteByte, secondByte, hour, minute, second);
+#endif
 }
