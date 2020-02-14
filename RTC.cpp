@@ -10,9 +10,9 @@ class RTC {
       Wire.begin();
       RTC.begin();
 
-      if (RTC.lostPower()) {
+      //if (RTC.lostPower()) {
         RTC.adjust(DateTime(__DATE__, __TIME__));
-      }
+      //}
     }
 
     int getHours() {

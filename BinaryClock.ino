@@ -1,4 +1,6 @@
 #define DEBUG false
+#define SLEEP_HOUR 22
+#define WAKEUP_HOUR 10
 
 #include "ByteFormatter.cpp"
 #include "RTC.cpp"
@@ -25,7 +27,11 @@ void updateTime() {
   uint8_t minuteByte = byteFormatter.getTimeByte(minute);
   uint8_t secondByte = byteFormatter.getTimeByte(second);
 
-  shiftRegisterOutput.updateShiftOutput(hourByte, minuteByte, secondByte);
+  if (hour > WAKEUP_HOUR && hour < SLEEP_HOUR) {
+    shiftRegisterOutput.updateShiftOutput(hourByte, minuteByte, secondByte);
+  } else {
+    shiftRegisterOutput.turnOff();
+  }
 
 #if DEBUG
   printDebugInformation(hourByte, minuteByte, secondByte, hour, minute, second);

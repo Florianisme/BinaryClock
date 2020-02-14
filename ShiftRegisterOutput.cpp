@@ -24,6 +24,10 @@ class ShiftRegisterOutput {
       endTransmission();
     }
 
+    void turnOff() {
+      resetOutput();
+    }
+
     private:
       void startTransmission() {
         digitalWrite(LATCH_PIN, LOW);
