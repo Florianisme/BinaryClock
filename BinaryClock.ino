@@ -1,4 +1,5 @@
 #define DEBUG false
+#define REDUCED_BRIGHTNESS true
 #define SLEEP_HOUR 22
 #define WAKEUP_HOUR 10
 
@@ -29,6 +30,10 @@ void updateTime() {
 
   if (hour > WAKEUP_HOUR && hour < SLEEP_HOUR) {
     shiftRegisterOutput.updateShiftOutput(hourByte, minuteByte, secondByte);
+    if (REDUCED_BRIGHTNESS) {
+      shiftRegisterOutput.turnOff();
+      delayMicroseconds(1);
+    }
   } else {
     shiftRegisterOutput.turnOff();
   }
